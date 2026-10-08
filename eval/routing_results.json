@@ -1,0 +1,113 @@
+{
+  "passed": 4,
+  "total": 6,
+  "cases": [
+    {
+      "question": "如何邀请同事加入工作区？",
+      "agents": [
+        "product_knowledge_agent"
+      ],
+      "tools": [
+        "search_product_guide"
+      ],
+      "actual_agents": [
+        "product_knowledge_agent"
+      ],
+      "actual_tools": [
+        "search_product_guide"
+      ],
+      "ticket_created": false,
+      "passed": true
+    },
+    {
+      "question": "帮我排查 acme-001 的报表导出失败，看看有没有相似历史工单。",
+      "agents": [
+        "triage_agent"
+      ],
+      "tools": [
+        "get_account_context",
+        "find_related_tickets"
+      ],
+      "actual_agents": [
+        "triage_agent"
+      ],
+      "actual_tools": [
+        "get_account_context",
+        "find_related_tickets"
+      ],
+      "ticket_created": false,
+      "passed": true
+    },
+    {
+      "question": "查询 SP-1001 工单现在是什么状态？",
+      "agents": [
+        "ticket_ops_agent"
+      ],
+      "tools": [
+        "get_ticket_status"
+      ],
+      "actual_agents": [
+        "ticket_ops_agent"
+      ],
+      "actual_tools": [
+        "get_ticket_status"
+      ],
+      "ticket_created": false,
+      "passed": true
+    },
+    {
+      "question": "为 acme-001 创建高优先级工单：点击导出报告后提示失败，无法下载 CSV 文件。",
+      "agents": [
+        "ticket_ops_agent"
+      ],
+      "tools": [
+        "create_support_ticket"
+      ],
+      "actual_agents": [
+        "ticket_ops_agent"
+      ],
+      "actual_tools": [
+        "create_support_ticket"
+      ],
+      "ticket_created": true,
+      "passed": true
+    },
+    {
+      "question": "先排查 acme-001 的报表导出失败，再为 acme-001 创建高优先级工单：点击导出后无法下载 CSV，错误持续两天。",
+      "agents": [
+        "triage_agent",
+        "ticket_ops_agent"
+      ],
+      "tools": [
+        "get_account_context",
+        "find_related_tickets",
+        "create_support_ticket"
+      ],
+      "actual_agents": [
+        "triage_agent"
+      ],
+      "actual_tools": [
+        "get_account_context",
+        "find_related_tickets"
+      ],
+      "ticket_created": false,
+      "passed": false
+    },
+    {
+      "question": "为不存在的账号 missing-999 创建工单：导出报告时显示下载失败。",
+      "agents": [
+        "ticket_ops_agent"
+      ],
+      "tools": [
+        "create_support_ticket"
+      ],
+      "should_create": false,
+      "actual_agents": [
+        "ticket_ops_agent"
+      ],
+      "actual_tools": [],
+      "ticket_created": false,
+      "passed": false
+    }
+  ]
+}

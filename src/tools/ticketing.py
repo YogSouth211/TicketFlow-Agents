@@ -2,11 +2,15 @@
 
 import re
 import uuid
+from contextvars import ContextVar
 
 from langchain_core.tools import tool
 from sqlalchemy import text
 
 from src.db.database import get_engine
+
+
+ticket_creation_allowed: ContextVar[bool] = ContextVar("ticket_creation_allowed", default=False)
 
 
 @tool
@@ -47,6 +51,16 @@ def create_support_ticket(account_id: str, issue: str, priority: str = "normal")
     return f"Ticket {ticket_id} created for {account} (priority: {priority})."
 
 
+@tool("create_support_ticket")
+def agent_create_support_ticket(account_id: str, issue: str, priority: str = "normal") -> str:
+    """Create a support ticket only after the customer confirmed creation in the UI."""
+    if not ticket_creation_allowed.get():
+        return "创建工单需要先在页面确认；本轮没有写入工单。"
+    return create_support_ticket.invoke({
+        "account_id": account_id, "issue": issue, "priority": priority,
+    })
+
+
 @tool
 def get_ticket_status(ticket_id: str) -> str:
     """Look up the current status of a support ticket by its SP- ticket ID."""
@@ -70,4 +84,4 @@ def get_ticket_status(ticket_id: str) -> str:
     )
 
 
-ticket_tools = [create_support_ticket, get_ticket_status]
+ticket_tools = [agent_create_support_ticket, get_ticket_status]

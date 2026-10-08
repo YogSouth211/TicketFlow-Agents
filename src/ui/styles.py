@@ -1,4 +1,4 @@
-"""Styles for the Chinese SupportPilot operator workbench."""
+"""Styles for the Chinese TicketFlow Agents operator workbench."""
 
 CUSTOM_CSS = """
 :root {

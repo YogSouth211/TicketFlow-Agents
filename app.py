@@ -1,4 +1,4 @@
-"""Local entry point for the SupportPilot multi-agent demo."""
+"""Local entry point for the TicketFlow Agents multi-agent demo."""
 
 import gradio as gr
 from src.ui.app import create_app

@@ -1,6 +1,6 @@
-# SupportPilot — SaaS 客户支持多智能体系统
+# TicketFlow Agents｜多智能体客服工单系统
 
-SupportPilot 是一个面向 SaaS 产品支持场景的 LangGraph 多智能体工作台。Supervisor 根据用户意图，把请求交给产品知识、问题排查或工单处理 Agent。页面提供智能协作、工单工作台和知识库三个入口，方便查看智能体实际产生的业务结果。
+TicketFlow Agents 是一个面向 SaaS 产品支持场景的 LangGraph 多智能体工作台。Supervisor 根据用户意图，把请求交给产品知识、问题排查或工单处理 Agent。页面提供智能协作、工单工作台和知识库三个入口，方便查看智能体实际产生的业务结果。GitHub 仓库名暂时保留为 SupportPilot。
 
 ## 能做什么
 
@@ -10,6 +10,7 @@ SupportPilot 是一个面向 SaaS 产品支持场景的 LangGraph 多智能体�
 - 工单工作台支持查看、筛选、人工创建工单，更新状态并记录处理过程。
 - 知识库支持新增、更新、停用知识；下一轮对话立即使用启用的内容。
 - 智能协作页显示参与的智能体及可见的执行步骤。
+- 对话建单先等待用户确认；账号在本地校验，Agent 建单工具入口也会拒绝未经确认的调用。Supervisor 漏掉建单步骤时，工单 Agent 会补全一次。
 
 试用问题：
 
@@ -22,7 +23,7 @@ SupportPilot 是一个面向 SaaS 产品支持场景的 LangGraph 多智能体�
 
 1. 在“智能协作”问产品使用问题，观察路由到产品知识 Agent。
 2. 描述故障并要求查询相似案例，观察路由到问题排查 Agent。
-3. 要求为 `acme-001` 创建工单，然后到“工单工作台”刷新列表，查看新工单与创建记录。
+3. 要求为 `acme-001` 创建工单，回复“确认创建”；然后到“工单工作台”刷新列表，查看新工单与创建记录。
 4. 在工单工作台填写处理记录，将状态改为 `in_progress` 或 `resolved`；回到智能协作按工单号查询。
 5. 在“知识库”新增一条有关键词的指南，再问对应问题，观察知识 Agent 使用新内容。
 
@@ -48,7 +49,7 @@ flowchart LR
     GT --> DB
 ```
 
-每个 Agent 只拿到完成职责所需的工具。产品知识 Agent 不创建工单；问题排查 Agent 只读历史数据；工单 Agent 不编造产品说明。Supervisor 负责分流和汇总。对话状态由 LangGraph 的 MemorySaver 按 thread_id 保存，仅在当前进程内有效。
+每个 Agent 只拿到完成职责所需的工具。产品知识 Agent 不创建工单；问题排查 Agent 只读历史数据；工单 Agent 不编造产品说明。Supervisor 负责分流和汇总。Agent 使用的建单工具还要检查页面设置的确认状态，防止错误路由直接写库；页面会核对工具返回的工单号，必要时补一次工单 Agent 调用。对话状态由 LangGraph 的 MemorySaver 按 thread_id 保存，仅在当前进程内有效。
 
 ## 技术栈
 
@@ -87,12 +88,14 @@ python app.py
 |---|---|
 | `src/agents/graph.py` | 创建三个 ReAct 专职 Agent，并交给 Supervisor 编排 |
 | `src/agents/prompts.py` | 定义 Supervisor 和专职 Agent 的职责边界 |
+| `src/agents/intent.py` | 页面建单确认时使用的简单意图判断 |
 | `src/tools/product_knowledge.py` | SQLite 产品指南关键词检索工具 |
 | `src/tools/triage.py` | 账号上下文与相似工单工具 |
 | `src/tools/ticketing.py` | 创建工单、查询工单状态工具 |
 | `src/db/database.py` | 初始化演示账号、工单、处理记录和知识表 |
 | `src/db/support_data.py` | 工作台读写与筛选逻辑 |
 | `src/ui/app.py` | Gradio 智能协作、工单和知识库页面 |
+| `eval/routing_eval.py` | 用隔离的临时数据库检查 6 条 Supervisor 路由用例 |
 
 ## 当前 Demo 的边界
 
@@ -101,6 +104,12 @@ python app.py
 - 数据库和对话 checkpoint 都是本地存储；此项目不面向生产部署。
 - 工单优先级由模型根据用户表达提取，工具仍会校验合法取值。
 - 工单工作台只适合本机演示，没有客服人员登录、权限控制或外部通知。
+- 建单确认不是身份认证。Agent 的建单工具默认拒绝未经确认的请求；工作台人工建单要求勾选确认。直接调用底层的数据库写入工具不经过页面确认。
+- 最新一次 6 条路由样例通过 4 条；多次运行中也曾出现纯排查请求被错误转给工单 Agent。工具入口的确认校验会阻止这类错误写库。模型路由仍有波动，不能据此声称路由始终正确。
+
+## 路由检查
+
+配置 `.env` 后运行 `python -m eval.routing_eval`。脚本使用临时 SQLite 数据库，不会修改页面的 `supportpilot.db`；逐题结果写入 `eval/routing_results.json`。它检查原始 Supervisor 路由和业务工具调用，页面的确认与补全流程另行验证。评测涉及真实模型调用，重复运行可能得到不同结果。
 
 ## 来源与许可
 

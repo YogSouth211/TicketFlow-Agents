@@ -1,4 +1,4 @@
-"""Shared state contract for SupportPilot conversations."""
+"""Shared state contract for TicketFlow Agents conversations."""
 
 from typing import Annotated
 from typing_extensions import TypedDict

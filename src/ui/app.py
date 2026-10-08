@@ -1,7 +1,8 @@
-"""Chinese operator workbench for the SupportPilot multi-agent demo."""
+"""Chinese operator workbench for the TicketFlow Agents demo."""
 
 import html
 import logging
+import re
 import time
 import uuid
 
@@ -9,22 +10,25 @@ import gradio as gr
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.agents.graph import build_graph
+from src.agents.intent import asks_to_create_ticket, is_cancellation, is_confirmation
 from src.config import settings
 from src.db.database import verify_database
 from src.db.support_data import (
     archive_article,
     dashboard_stats,
     get_ticket,
+    list_accounts,
     list_articles,
     list_tickets,
     save_article,
     ticket_events,
     update_ticket,
 )
-from src.tools.ticketing import create_support_ticket
+from src.tools.ticketing import create_support_ticket, ticket_creation_allowed
 
 logger = logging.getLogger(__name__)
 _graph = None
+_agents = {}
 
 TICKET_HEADERS = ["工单号", "账号", "问题", "优先级", "状态", "创建时间"]
 ARTICLE_HEADERS = ["ID", "标题", "关键词", "状态", "更新时间"]
@@ -46,20 +50,20 @@ TOOL_NAMES = {
 
 
 def initialize() -> None:
-    global _graph
+    global _graph, _agents
     health = verify_database()
     if health.get("status") != "healthy":
         raise RuntimeError(f"Local support database is unavailable: {health}")
     if not settings.openai_api_key:
         logger.warning("No model API key configured; UI will start in preview mode.")
         return
-    _graph, _, _ = build_graph(
+    _graph, _, _agents = build_graph(
         model_name=settings.model_name,
         temperature=settings.temperature,
         openai_api_key=settings.openai_api_key,
         openai_api_base=settings.openai_api_base,
     )
-    logger.info("SupportPilot multi-agent graph initialized.")
+    logger.info("TicketFlow multi-agent graph initialized.")
 
 
 def _status_html(status: str, message: str, agents: list[str] | None = None) -> str:
@@ -121,17 +125,19 @@ def apply_ticket_update(ticket_id: str, status: str, note: str):
     return message, ""
 
 
-def create_ticket_manually(account_id: str, issue: str, priority: str):
+def create_ticket_manually(account_id: str, issue: str, priority: str, confirmed: bool):
+    if not confirmed:
+        return "请先核对信息并勾选确认，再创建工单。", False
     result = create_support_ticket.invoke({"account_id": account_id, "issue": issue,
                                            "priority": priority})
     if result.startswith("Ticket "):
-        return f"工单已创建：**{result.split()[1]}**。请点击下方“刷新工单”查看。"
+        return f"工单已创建：**{result.split()[1]}**。请点击下方“刷新工单”查看。", False
     messages = {
         "Invalid priority": "优先级无效。",
         "Please provide": "请把问题描述写得更具体一些。",
         "Account not found": "账号不存在，请检查账号 ID。",
     }
-    return next((message for prefix, message in messages.items() if result.startswith(prefix)), result)
+    return next((message for prefix, message in messages.items() if result.startswith(prefix)), result), False
 
 
 def refresh_articles():
@@ -151,7 +157,7 @@ def archive_knowledge(article_id: float | None):
 
 
 def reset_conversation():
-    return [], str(uuid.uuid4()), _status_html("idle", "已开启新对话"), "尚无执行记录。"
+    return [], str(uuid.uuid4()), _status_html("idle", "已开启新对话"), "尚无执行记录。", ""
 
 
 def show_user_message(message, history, thread_id):
@@ -161,25 +167,74 @@ def show_user_message(message, history, thread_id):
     return history + [{"role": "user", "content": message}], "", thread_id, _status_html("waiting", "正在分配处理…")
 
 
-def generate_response(history, thread_id):
+def generate_response(history, thread_id, pending_request=""):
     if not history:
-        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。"
+        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。", pending_request
     if not _graph:
         if settings.openai_api_key:
             initialize()
         if not _graph:
             answer = "尚未配置模型服务。请在项目根目录的 .env 文件中填写 API Key 后重启应用。"
-            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "尚未配置模型服务"), "模型未配置。"
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "尚未配置模型服务"), "模型未配置。", pending_request
 
     user_message = next((item["content"] for item in reversed(history) if item.get("role") == "user"), None)
     if not user_message:
-        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。"
+        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。", pending_request
+
+    confirmed_create = False
+    if pending_request:
+        if is_cancellation(user_message):
+            answer = "已取消创建工单，没有写入新工单。"
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("idle", "已取消创建"), "未调用智能体或工具。", ""
+        if is_confirmation(user_message):
+            user_message = pending_request
+            pending_request = ""
+            confirmed_create = True
+        else:
+            pending_request = ""
+    if asks_to_create_ticket(user_message) and not confirmed_create:
+        answer = "收到创建工单请求。请核对账号和问题描述；回复 **确认创建** 后才会交给智能体处理，或回复 **取消**。"
+        return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("waiting", "等待创建确认"), "尚未调用建单工具。", user_message
+
+    if confirmed_create:
+        account_match = re.search(r"\b[a-z][a-z0-9]*-\d{3,}\b", user_message.lower())
+        if not account_match:
+            answer = "还缺少账号 ID，例如 acme-001；本轮没有创建工单。"
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "缺少账号 ID"), "未调用建单工具。", pending_request
+        known_accounts = {item["account_id"] for item in list_accounts()}
+        if account_match.group() not in known_accounts:
+            answer = f"账号 {account_match.group()} 不存在，请核对后重试；本轮没有创建工单。"
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "账号不存在"), "未调用建单工具。", pending_request
 
     started_at = time.time()
     config = {"configurable": {"thread_id": thread_id}}
     agents_used = []
     steps = []
+    seen_tool_ids = set()
     final_response = None
+    triage_summary = ""
+    create_attempted = False
+    created_ticket_id = None
+    create_error = ""
+
+    def record_tool(item: ToolMessage, agent_name: str) -> None:
+        nonlocal create_attempted, created_ticket_id, create_error
+        if item.name not in TOOL_NAMES:
+            return
+        tool_id = item.id or (item.name, item.tool_call_id, str(item.content))
+        if tool_id in seen_tool_ids:
+            return
+        seen_tool_ids.add(tool_id)
+        steps.append(f"**{len(steps) + 1}. {AGENT_NAMES[agent_name]}** 调用{TOOL_NAMES[item.name]}")
+        if item.name == "create_support_ticket":
+            create_attempted = True
+            match = re.search(r"Ticket (SP-[A-Z0-9]+) created", str(item.content))
+            if match:
+                created_ticket_id = match.group(1)
+            else:
+                create_error = str(item.content)
+
+    authorization_token = ticket_creation_allowed.set(confirmed_create)
     try:
         events = _graph.stream({"messages": [HumanMessage(content=user_message)]},
                                config=config, stream_mode="updates")
@@ -190,31 +245,73 @@ def generate_response(history, thread_id):
                     steps.append(f"**{len(steps) + 1}. {AGENT_NAMES[node_name]}** 接手任务")
                 if isinstance(node_output, dict):
                     for item in node_output.get("messages", []):
-                        if isinstance(item, ToolMessage):
-                            tool_name = TOOL_NAMES.get(item.name, item.name)
-                            steps.append(f"**{len(steps) + 1}. 工具调用** · {tool_name}")
-                        elif isinstance(item, AIMessage) and item.content and not item.tool_calls:
+                        if isinstance(item, ToolMessage) and node_name in AGENT_NAMES:
+                            record_tool(item, node_name)
+                        elif (node_name == "triage_agent" and isinstance(item, AIMessage)
+                              and item.content and not item.tool_calls and item.name == "triage_agent"
+                              and "Transferring back" not in str(item.content)):
+                            triage_summary = str(item.content)
+                        elif (node_name == "supervisor" and isinstance(item, AIMessage)
+                              and item.content and not item.tool_calls and item.name == "supervisor"):
                             final_response = item.content
+
+        if confirmed_create and not create_attempted and _agents.get("ticket_ops_agent"):
+            # Supervisor may stop after triage. Finish an explicitly confirmed request once.
+            agents_used.append("ticket_ops_agent")
+            steps.append(f"**{len(steps) + 1}. 工单处理智能体** 补全建单流程")
+            context = f"用户已经在页面确认创建工单。原始请求：{user_message}"
+            if triage_summary:
+                context += f"\n排查智能体的结果：{triage_summary}"
+            output = _agents["ticket_ops_agent"].invoke({"messages": [HumanMessage(content=context)]})
+            for item in output.get("messages", []):
+                if isinstance(item, ToolMessage):
+                    record_tool(item, "ticket_ops_agent")
+                elif isinstance(item, AIMessage) and item.content and not item.tool_calls:
+                    final_response = item.content
+
+        if confirmed_create:
+            if created_ticket_id:
+                final_response = f"已创建工单 **{created_ticket_id}**，当前状态为待处理。"
+                if triage_summary:
+                    final_response += f"\n\n排查摘要：{triage_summary}"
+            elif create_attempted:
+                errors = {
+                    "Account not found": "账号不存在，请核对账号 ID。",
+                    "Please provide": "问题描述不够具体，请补充故障现象后重试。",
+                    "Invalid priority": "优先级无效，请选择低、普通或高。",
+                }
+                final_response = next((message for prefix, message in errors.items()
+                                       if create_error.startswith(prefix)), "工单没有创建成功，请核对信息后重试。")
+            else:
+                final_response = "本轮没有创建工单。请补充账号 ID 和具体问题描述后重试。"
+        elif create_attempted:
+            final_response = "本轮没有创建工单。若需要建单，请明确提出请求并在页面确认。"
         if final_response:
             elapsed = time.time() - started_at
             trace = "\n\n".join(steps) or "Supervisor 直接完成回复。"
             return (history + [{"role": "assistant", "content": final_response}], thread_id,
-                    _status_html("success", f"处理完成 · {elapsed:.1f} 秒", agents_used), trace)
-        return history, thread_id, _status_html("error", "暂时没有生成回复", agents_used), "\n\n".join(steps)
+                    _status_html("success" if (not confirmed_create and not create_attempted) or created_ticket_id else "error",
+                                 f"处理完成 · {elapsed:.1f} 秒", agents_used), trace, pending_request)
+        return history, thread_id, _status_html("error", "暂时没有生成回复", agents_used), "\n\n".join(steps), pending_request
     except Exception:
-        logger.exception("SupportPilot request failed")
-        answer = "处理时遇到问题，请稍后重试；如持续出现，请检查模型服务连接。"
+        logger.exception("TicketFlow request failed")
+        answer = (f"工单 {created_ticket_id} 已创建，但后续处理出错；请到工单工作台查看。"
+                  if created_ticket_id else
+                  "处理时遇到问题，无法确认是否已创建工单。请先在工单工作台核对，避免重复创建。")
         return (history + [{"role": "assistant", "content": answer}], thread_id,
-                _status_html("error", "处理失败，请检查服务状态"), "\n\n".join(steps) or "调用模型服务失败。")
+                _status_html("error", "处理失败，请检查服务状态"), "\n\n".join(steps) or "处理流程中断。", pending_request)
+    finally:
+        ticket_creation_allowed.reset(authorization_token)
 
 
 def create_app() -> gr.Blocks:
     initialize()
     with gr.Blocks(title=settings.app_title, fill_width=True) as app:
         thread_id = gr.State(value="")
+        pending_request = gr.State(value="")
         gr.HTML(
-            '<header class="hero"><div class="hero-topline"><span class="brand-mark">S</span>'
-            '<span class="brand-name">SUPPORTPILOT</span>'
+            '<header class="hero"><div class="hero-topline"><span class="brand-mark">T</span>'
+            '<span class="brand-name">TICKETFLOW AGENTS</span>'
             '<span class="live-badge"><i></i> 本地演示</span></div>'
             '<div class="hero-body"><div><span class="hero-eyebrow">AI CUSTOMER SUPPORT WORKSPACE</span>'
             f'<h1>{settings.app_title}</h1>'
@@ -296,6 +393,7 @@ def create_app() -> gr.Blocks:
                             value="normal", label="优先级")
                     manual_issue = gr.Textbox(label="问题描述", lines=2,
                                               placeholder="描述故障现象，至少 8 个字")
+                    manual_confirm = gr.Checkbox(label="我已核对账号和问题描述，确认创建工单", value=False)
                     manual_create = gr.Button("创建工单", variant="primary")
                     manual_result = gr.Markdown()
 
@@ -325,7 +423,7 @@ def create_app() -> gr.Blocks:
                         save_button = gr.Button("保存知识", variant="primary")
                         article_message = gr.Markdown()
 
-        gr.HTML('<footer class="app-footer"><span>SupportPilot 多智能体客服</span>'
+        gr.HTML('<footer class="app-footer"><span>TicketFlow Agents 多智能体客服</span>'
                 '<span>演示账号 acme-001 / northstar-002 · 本地 SQLite 数据</span></footer>')
 
         examples = (
@@ -339,15 +437,15 @@ def create_app() -> gr.Blocks:
         for trigger in (send_button.click, message_input.submit):
             trigger(fn=show_user_message, inputs=[message_input, chatbot, thread_id],
                     outputs=[chatbot, message_input, thread_id, status]).then(
-                fn=generate_response, inputs=[chatbot, thread_id],
-                outputs=[chatbot, thread_id, status, trace])
-        reset_button.click(fn=reset_conversation, outputs=[chatbot, thread_id, status, trace])
+                fn=generate_response, inputs=[chatbot, thread_id, pending_request],
+                outputs=[chatbot, thread_id, status, trace, pending_request])
+        reset_button.click(fn=reset_conversation, outputs=[chatbot, thread_id, status, trace, pending_request])
 
         refresh_button.click(fn=refresh_tickets, inputs=[status_filter, account_filter],
                              outputs=[ticket_stats, ticket_table, ticket_select])
         manual_create.click(fn=create_ticket_manually,
-                            inputs=[manual_account, manual_issue, manual_priority],
-                            outputs=manual_result).then(
+                            inputs=[manual_account, manual_issue, manual_priority, manual_confirm],
+                            outputs=[manual_result, manual_confirm]).then(
             fn=refresh_tickets, inputs=[status_filter, account_filter],
             outputs=[ticket_stats, ticket_table, ticket_select])
         ticket_select.change(fn=show_ticket, inputs=ticket_select,

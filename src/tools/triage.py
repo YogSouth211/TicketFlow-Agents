@@ -40,7 +40,10 @@ def find_related_tickets(issue: str) -> str:
         return "请提供更具体的问题描述。"
     matches = []
     for ticket in list_tickets():
-        item_text = ticket["issue"].lower()
+        issue_text = ticket.get("issue")
+        if not issue_text:
+            continue
+        item_text = issue_text.lower()
         score = sum(term in item_text for term in terms)
         if score:
             matches.append((score, ticket))

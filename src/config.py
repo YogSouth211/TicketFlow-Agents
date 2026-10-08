@@ -21,7 +21,7 @@ class Settings:
     model_name: str = os.getenv("MODEL_NAME", "qwen-plus")
     temperature: float = float(os.getenv("TEMPERATURE", "0"))
     port: int = int(os.getenv("PORT", "7860"))
-    app_title: str = "SupportPilot 多智能体客服工作台"
+    app_title: str = "TicketFlow Agents｜多智能体客服工单系统"
     app_description: str = (
         "智能分流产品咨询与工单请求，由专业智能体协作处理。"
     )

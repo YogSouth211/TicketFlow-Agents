@@ -1,4 +1,4 @@
-"""Build the SupportPilot multi-agent supervisor graph."""
+"""Build the TicketFlow Agents multi-agent supervisor graph."""
 
 import logging
 
@@ -55,9 +55,9 @@ def build_graph(
         agents=[knowledge_agent, triage_agent, ticket_agent],
         model=llm,
         prompt=SUPERVISOR_PROMPT,
-        output_mode="last_message",
+        output_mode="full_history",
     )
     checkpointer = MemorySaver()
-    graph = supervisor.compile(name="supportpilot_multi_agent", checkpointer=checkpointer)
-    logger.info("SupportPilot supervisor and specialist agents are ready.")
-    return graph, checkpointer, None
+    graph = supervisor.compile(name="ticketflow_multi_agent", checkpointer=checkpointer)
+    logger.info("TicketFlow supervisor and specialist agents are ready.")
+    return graph, checkpointer, {"ticket_ops_agent": ticket_agent}
