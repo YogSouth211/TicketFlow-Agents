@@ -1,6 +1,6 @@
 # Development Notes
 
-SupportPilot is a learning demo. Keep changes small and easy to explain:
+TicketFlow Agents is a learning demo. Keep changes small and easy to explain:
 
 - Keep each specialist agent's tools limited to its responsibility.
 - Use parameterized SQL for database access.

@@ -157,7 +157,7 @@ def archive_knowledge(article_id: float | None):
 
 
 def reset_conversation():
-    return [], str(uuid.uuid4()), _status_html("idle", "已开启新对话"), "尚无执行记录。", ""
+    return [], str(uuid.uuid4()), _status_html("idle", "已开启新对话"), "尚无执行记录。", "", []
 
 
 def show_user_message(message, history, thread_id):
@@ -167,25 +167,63 @@ def show_user_message(message, history, thread_id):
     return history + [{"role": "user", "content": message}], "", thread_id, _status_html("waiting", "正在分配处理…")
 
 
-def generate_response(history, thread_id, pending_request=""):
+def _chat_text(content: object) -> str:
+    """Read text returned by Gradio Chatbot, including its text-block format."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        )
+    return ""
+
+
+def _render_trace(records: list[dict[str, str]]) -> str:
+    if not records:
+        return "尚无执行记录。"
+    sections = []
+    for index, row in enumerate(records, start=1):
+        question_title = html.escape(row["question"].replace("\n", " ")[:80])
+        sections.append(f"#### 第 {index} 轮 · {question_title}\n\n{row['steps']}")
+    return "\n\n---\n\n".join(sections)
+
+
+def _record_trace(records: list[dict[str, str]], question: str, steps: str):
+    updated = records + [{"question": question, "steps": steps or "没有可见的执行步骤。"}]
+    return _render_trace(updated), updated
+
+
+def generate_response(history, thread_id, pending_request="", trace_history=None):
+    trace_history = list(trace_history or [])
     if not history:
-        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。", pending_request
+        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。", pending_request, trace_history
+    if history[-1].get("role") != "user":
+        return history, thread_id, _status_html("idle", "请输入问题"), _render_trace(trace_history), pending_request, trace_history
+    visible_question = next(
+        (_chat_text(item.get("content")) for item in reversed(history) if item.get("role") == "user"),
+        "",
+    )
     if not _graph:
         if settings.openai_api_key:
             initialize()
         if not _graph:
             answer = "尚未配置模型服务。请在项目根目录的 .env 文件中填写 API Key 后重启应用。"
-            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "尚未配置模型服务"), "模型未配置。", pending_request
+            shown, records = _record_trace(trace_history, visible_question, "模型未配置。")
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "尚未配置模型服务"), shown, pending_request, records
 
-    user_message = next((item["content"] for item in reversed(history) if item.get("role") == "user"), None)
+    user_message = visible_question
     if not user_message:
-        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。", pending_request
+        return history, thread_id, _status_html("idle", "请输入问题"), "尚无执行记录。", pending_request, trace_history
 
     confirmed_create = False
     if pending_request:
         if is_cancellation(user_message):
             answer = "已取消创建工单，没有写入新工单。"
-            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("idle", "已取消创建"), "未调用智能体或工具。", ""
+            shown, records = _record_trace(trace_history, visible_question, "未调用智能体或工具。")
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("idle", "已取消创建"), shown, "", records
         if is_confirmation(user_message):
             user_message = pending_request
             pending_request = ""
@@ -194,17 +232,20 @@ def generate_response(history, thread_id, pending_request=""):
             pending_request = ""
     if asks_to_create_ticket(user_message) and not confirmed_create:
         answer = "收到创建工单请求。请核对账号和问题描述；回复 **确认创建** 后才会交给智能体处理，或回复 **取消**。"
-        return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("waiting", "等待创建确认"), "尚未调用建单工具。", user_message
+        shown, records = _record_trace(trace_history, visible_question, "等待创建确认，尚未调用建单工具。")
+        return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("waiting", "等待创建确认"), shown, user_message, records
 
     if confirmed_create:
         account_match = re.search(r"\b[a-z][a-z0-9]*-\d{3,}\b", user_message.lower())
         if not account_match:
             answer = "还缺少账号 ID，例如 acme-001；本轮没有创建工单。"
-            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "缺少账号 ID"), "未调用建单工具。", pending_request
+            shown, records = _record_trace(trace_history, visible_question, "缺少账号 ID，未调用建单工具。")
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "缺少账号 ID"), shown, pending_request, records
         known_accounts = {item["account_id"] for item in list_accounts()}
         if account_match.group() not in known_accounts:
             answer = f"账号 {account_match.group()} 不存在，请核对后重试；本轮没有创建工单。"
-            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "账号不存在"), "未调用建单工具。", pending_request
+            shown, records = _record_trace(trace_history, visible_question, "账号不存在，未调用建单工具。")
+            return history + [{"role": "assistant", "content": answer}], thread_id, _status_html("error", "账号不存在"), shown, pending_request, records
 
     started_at = time.time()
     config = {"configurable": {"thread_id": thread_id}}
@@ -216,6 +257,8 @@ def generate_response(history, thread_id, pending_request=""):
     create_attempted = False
     created_ticket_id = None
     create_error = ""
+    incoming_message = HumanMessage(content=user_message, id=f"ui-{uuid.uuid4().hex}")
+    seen_message_ids: set[str] = set()
 
     def record_tool(item: ToolMessage, agent_name: str) -> None:
         nonlocal create_attempted, created_ticket_id, create_error
@@ -236,7 +279,7 @@ def generate_response(history, thread_id, pending_request=""):
 
     authorization_token = ticket_creation_allowed.set(confirmed_create)
     try:
-        events = _graph.stream({"messages": [HumanMessage(content=user_message)]},
+        events = _graph.stream({"messages": [incoming_message]},
                                config=config, stream_mode="updates")
         for event in events:
             for node_name, node_output in event.items():
@@ -244,7 +287,20 @@ def generate_response(history, thread_id, pending_request=""):
                     agents_used.append(node_name)
                     steps.append(f"**{len(steps) + 1}. {AGENT_NAMES[node_name]}** 接手任务")
                 if isinstance(node_output, dict):
-                    for item in node_output.get("messages", []):
+                    messages = node_output.get("messages", [])
+                    # full_history replays prior turns and earlier nodes on every update.
+                    # Only inspect messages added after this request, once per message ID.
+                    turn_start = next((index for index in range(len(messages) - 1, -1, -1)
+                                       if isinstance(messages[index], HumanMessage)
+                                       and (messages[index].id == incoming_message.id
+                                            or messages[index].content == user_message)), None)
+                    if turn_start is not None:
+                        messages = messages[turn_start + 1:]
+                    for item in messages:
+                        if item.id is not None:
+                            if item.id in seen_message_ids:
+                                continue
+                            seen_message_ids.add(item.id)
                         if isinstance(item, ToolMessage) and node_name in AGENT_NAMES:
                             record_tool(item, node_name)
                         elif (node_name == "triage_agent" and isinstance(item, AIMessage)
@@ -288,18 +344,23 @@ def generate_response(history, thread_id, pending_request=""):
             final_response = "本轮没有创建工单。若需要建单，请明确提出请求并在页面确认。"
         if final_response:
             elapsed = time.time() - started_at
-            trace = "\n\n".join(steps) or "Supervisor 直接完成回复。"
+            shown, records = _record_trace(trace_history, visible_question,
+                                           "\n\n".join(steps) or "Supervisor 直接完成回复。")
             return (history + [{"role": "assistant", "content": final_response}], thread_id,
                     _status_html("success" if (not confirmed_create and not create_attempted) or created_ticket_id else "error",
-                                 f"处理完成 · {elapsed:.1f} 秒", agents_used), trace, pending_request)
-        return history, thread_id, _status_html("error", "暂时没有生成回复", agents_used), "\n\n".join(steps), pending_request
+                                 f"处理完成 · {elapsed:.1f} 秒", agents_used), shown, pending_request, records)
+        shown, records = _record_trace(trace_history, visible_question, "\n\n".join(steps))
+        return (history + [{"role": "assistant", "content": "暂时没有生成回复，请换一种问法重试。"}],
+                thread_id, _status_html("error", "暂时没有生成回复", agents_used), shown, pending_request, records)
     except Exception:
         logger.exception("TicketFlow request failed")
         answer = (f"工单 {created_ticket_id} 已创建，但后续处理出错；请到工单工作台查看。"
                   if created_ticket_id else
                   "处理时遇到问题，无法确认是否已创建工单。请先在工单工作台核对，避免重复创建。")
+        shown, records = _record_trace(trace_history, visible_question,
+                                       "\n\n".join(steps) or "处理流程中断。")
         return (history + [{"role": "assistant", "content": answer}], thread_id,
-                _status_html("error", "处理失败，请检查服务状态"), "\n\n".join(steps) or "处理流程中断。", pending_request)
+                _status_html("error", "处理失败，请检查服务状态"), shown, pending_request, records)
     finally:
         ticket_creation_allowed.reset(authorization_token)
 
@@ -309,6 +370,7 @@ def create_app() -> gr.Blocks:
     with gr.Blocks(title=settings.app_title, fill_width=True) as app:
         thread_id = gr.State(value="")
         pending_request = gr.State(value="")
+        trace_history = gr.State(value=[])
         gr.HTML(
             '<header class="hero"><div class="hero-topline"><span class="brand-mark">T</span>'
             '<span class="brand-name">TICKETFLOW AGENTS</span>'
@@ -346,7 +408,7 @@ def create_app() -> gr.Blocks:
                                 reset_button = gr.Button("新建对话", size="sm")
                     with gr.Column(scale=3, elem_classes=["trace-panel"]):
                         gr.HTML('<div class="trace-heading"><span class="trace-symbol">↗</span>'
-                                '<div><strong>执行过程</strong><small>本轮智能体与工具调用</small></div></div>')
+                                '<div><strong>执行历史</strong><small>按提问记录智能体与工具调用</small></div></div>')
                         trace = gr.Markdown(value="尚无执行记录。")
                         gr.HTML('<div class="agent-legend"><span>专职分工</span>'
                                 '<div>◈ 产品知识　◈ 问题排查　◈ 工单处理</div></div>')
@@ -437,9 +499,10 @@ def create_app() -> gr.Blocks:
         for trigger in (send_button.click, message_input.submit):
             trigger(fn=show_user_message, inputs=[message_input, chatbot, thread_id],
                     outputs=[chatbot, message_input, thread_id, status]).then(
-                fn=generate_response, inputs=[chatbot, thread_id, pending_request],
-                outputs=[chatbot, thread_id, status, trace, pending_request])
-        reset_button.click(fn=reset_conversation, outputs=[chatbot, thread_id, status, trace, pending_request])
+                fn=generate_response, inputs=[chatbot, thread_id, pending_request, trace_history],
+                outputs=[chatbot, thread_id, status, trace, pending_request, trace_history])
+        reset_button.click(fn=reset_conversation,
+                           outputs=[chatbot, thread_id, status, trace, pending_request, trace_history])
 
         refresh_button.click(fn=refresh_tickets, inputs=[status_filter, account_filter],
                              outputs=[ticket_stats, ticket_table, ticket_select])

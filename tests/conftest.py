@@ -1,13 +1,19 @@
-"""Shared fixtures for local support-tool checks."""
+"""Run each check against an isolated in-memory support database."""
 
 import pytest
 
-from src.db.database import get_engine, verify_database
+from src.db import database
 
 
-@pytest.fixture(scope="session", autouse=True)
-def ensure_database():
-    engine = get_engine()
-    assert engine is not None
-    assert verify_database()["status"] == "healthy"
-    return engine
+@pytest.fixture(autouse=True)
+def ensure_database(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+    previous_engine = database._engine
+    database._engine = None
+    engine = database.get_engine()
+    assert database.verify_database()["status"] == "healthy"
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+        database._engine = previous_engine

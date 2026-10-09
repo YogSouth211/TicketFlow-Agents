@@ -1,6 +1,6 @@
 # Security Scope
 
-SupportPilot is a local learning demo, not a production support service.
+TicketFlow Agents is a local learning demo, not a production support service.
 
 - The sample account IDs are public demo values and do not authenticate users.
 - Do not connect this demo to real customer data.

@@ -7,7 +7,8 @@
 3. Supervisor 判断请求是产品使用、问题排查、工单操作，还是需要跨智能体协作。
 4. 专职 Agent 调用自己的工具。产品 Agent 搜 SQLite 知识；排障 Agent 读账号和相似工单；工单 Agent 查询或写入 SQLite。
 5. Agent 的建单工具入口先检查页面设置的确认状态；页面再核对是否实际返回工单号。确认过的建单请求若漏了工单 Agent，会补全一次。
-6. MemorySaver 保存当前对话线程状态，方便多轮交流。
+6. MemorySaver 保存当前对话线程状态，方便多轮交流。Supervisor 返回的更新包含完整消息历史；页面以本轮 HumanMessage 为边界，按消息 ID 去重，只提取本轮新增的工具调用和回复。
+7. 页面把每轮执行步骤单独加入执行历史；“新建对话”会清空这份页面状态。
 
 ```mermaid
 sequenceDiagram
@@ -37,7 +38,7 @@ sequenceDiagram
         T-->>S: 操作结果
     end
     S-->>UI: 汇总回复
-    UI-->>U: 展示结果和代理信息
+    UI-->>U: 展示回答和按轮执行历史
 ```
 
 ## Agent 职责边界
@@ -55,8 +56,8 @@ sequenceDiagram
 - **参数化 SQL**：账号 ID、工单号、描述和优先级都通过绑定参数写入/查询。
 - **数据校验**：工单优先级限定为 low/normal/high；描述太短时拒绝创建；账号不存在时不写入。
 - **按会话 checkpoint**：不同 thread_id 使用独立对话状态；MemorySaver 是进程内存储，重启后会清空。
-- **可追踪路由**：UI 从 LangGraph updates 中收集执行过的 specialist 节点。
-- **工具可见**：Supervisor 保留专职 Agent 的完整消息历史，UI 才能显示实际调用过的业务工具。
+- **可追踪路由**：UI 从 LangGraph updates 中收集本轮执行过的 specialist 节点。
+- **工具可见与历史去重**：Supervisor 保留专职 Agent 的完整消息历史；UI 只读取当前请求之后的新消息，并按消息 ID 去重，避免把过去的工具调用贴到当前 Agent 名下。各轮记录保存在 Gradio 页面状态中，刷新或新建对话后清空。
 - **建单确认与核对**：Agent 建单工具默认拒绝未确认请求，即使 Supervisor 误路由也不会写库；最终回复以工具返回的工单号为准。
 - **工单闭环**：创建、列表筛选、人工处理记录与状态变更都保存在 SQLite。
 - **知识维护**：新增、更新和停用知识后，Agent 下一轮检索会读取新的有效内容。

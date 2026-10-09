@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.agents.intent import asks_to_create_ticket
 from src.tools.triage import find_related_tickets
@@ -60,6 +60,52 @@ def test_chat_requires_confirmation_then_fills_missing_ticket_handoff():
     assert "排查摘要" in result[0][-1]["content"]
     assert "创建工单" in result[3]
     assert result[4] == ""
+
+
+def test_trace_ignores_old_tools_replayed_with_full_history():
+    class FullHistoryGraph:
+        def stream(self, payload, config, stream_mode):
+            old = [
+                HumanMessage(content="如何邀请同事？", id="old-user"),
+                ToolMessage(content="邀请指南", name="search_product_guide",
+                            tool_call_id="old-call", id="old-tool"),
+            ]
+            current = payload["messages"][0]
+            yield {"supervisor": {"messages": old + [current]}}
+            yield {"ticket_ops_agent": {"messages": old + [current,
+                ToolMessage(content="Ticket SP-1001 is open", name="get_ticket_status",
+                            tool_call_id="new-call", id="new-tool"),
+            ]}}
+            yield {"supervisor": {"messages": old + [current,
+                ToolMessage(content="Ticket SP-1001 is open", name="get_ticket_status",
+                            tool_call_id="new-call", id="new-tool"),
+                AIMessage(content="工单 SP-1001 待处理。", name="supervisor", id="final"),
+            ]}}
+
+    prior = [{"question": "如何邀请同事？", "steps": "**1. 产品知识智能体** 调用搜索产品知识"}]
+    with patch("src.ui.app._graph", FullHistoryGraph()):
+        result = generate_response([{"role": "user", "content": "SP-1001 现在是什么状态？"}],
+                                   "thread-trace", trace_history=prior)
+
+    assert "工单处理智能体** 调用查询工单状态" in result[3]
+    assert "产品知识智能体** 调用搜索产品知识" in result[3]
+    assert "工单处理智能体** 调用搜索产品知识" not in result[3]
+    assert result[3].count("调用搜索产品知识") == 1
+    assert result[3].count("调用查询工单状态") == 1
+    assert len(result[5]) == 2
+
+
+def test_empty_send_does_not_repeat_previous_request():
+    graph = FakeGraph()
+    previous = [{"question": "如何邀请同事？", "steps": "产品知识智能体接手任务"}]
+    history = [{"role": "user", "content": "如何邀请同事？"},
+               {"role": "assistant", "content": "查看工作区设置。"}]
+    with patch("src.ui.app._graph", graph):
+        result = generate_response(history, "thread-empty", trace_history=previous)
+    assert graph.calls == 0
+    assert result[0] == history
+    assert result[5] == previous
+    assert result[3].count("产品知识智能体接手任务") == 1
 
 
 def test_unknown_account_is_rejected_before_graph():
