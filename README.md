@@ -1,6 +1,6 @@
 # TicketFlow Agents｜多智能体客服工单系统
 
-TicketFlow Agents 是一个面向 SaaS 产品支持场景的 LangGraph 多智能体工作台。Supervisor 根据用户意图，把请求交给产品知识、问题排查或工单处理 Agent。页面提供智能协作、工单工作台和知识库三个入口，方便查看智能体实际产生的业务结果。GitHub 仓库名暂时保留为 SupportPilot。
+TicketFlow Agents 是一个面向 SaaS 产品支持场景的 LangGraph 多智能体工作台。Supervisor 根据用户意图，把请求交给产品知识、问题排查或工单处理 Agent。页面提供智能协作、工单工作台和知识库三个入口，方便查看智能体实际产生的业务结果。
 
 ## 能做什么
 

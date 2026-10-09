@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Reworked the demo into TicketFlow Agents — a SaaS customer support multi-agent workbench (GitHub repository name: SupportPilot).
+- Reworked the demo into TicketFlow Agents — a SaaS customer support multi-agent workbench.
 - Replaced the music and invoice flows with product knowledge, incident triage, and support-ticket agents.
 - Added a Gradio workbench for ticket lifecycle and knowledge management backed by SQLite.
 - Configured Alibaba Cloud Qwen through its OpenAI-compatible endpoint.
